@@ -2,6 +2,8 @@ package packet_test
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"testing"
@@ -251,4 +253,79 @@ func TestReadError(t *testing.T) {
 
 	// Check message contents
 	assert.Equal(t, "pong", string(msg.Data))
+}
+
+func TestSendAndClose(t *testing.T) {
+	var longPingMessage = "pingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingping\n" +
+		"pingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingpingping"
+	var longPongMessage = "pongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpong\n" +
+		"pongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpong"
+
+	listener, err := net.Listen("tcp", "192.168.1.143:7004")
+	assert.Nil(t, err)
+	assert.NotNil(t, listener)
+	defer listener.Close()
+
+	go func() {
+		conn, err := listener.Accept()
+
+		if conn == nil {
+			return
+		}
+
+		assert.NotNil(t, conn)
+		assert.Nil(t, err)
+
+		client := packet.NewStream(1024)
+
+		client.OnError(func(err packet.IOError) {
+			fmt.Println("Error: ", err.Error.Error())
+			if err.Error == io.EOF {
+				// conn.Close()
+				return
+			}
+			assert.Nil(t, err.Error)
+
+		})
+
+		client.SetConnection(conn)
+
+		msg := <-client.Incoming
+		assert.Equal(t, longPingMessage, string(msg.Data))
+
+		client.Outgoing <- packet.New(0, []byte(longPongMessage))
+
+		msg = <-client.Incoming
+		assert.Equal(t, longPingMessage, string(msg.Data))
+
+		client.Close()
+
+	}()
+
+	// Client
+	conn, err := net.Dial("tcp", "192.168.1.143:7004")
+	assert.Nil(t, err)
+
+	client := packet.NewStream(1024)
+	client.SetConnection(conn)
+	defer client.Close()
+
+	client.OnError(func(i packet.IOError) {
+		fmt.Println("Error: ", i.Error.Error())
+		assert.Nil(t, i.Error)
+	})
+
+	// Send message
+	client.Outgoing <- packet.New(0, []byte(longPingMessage))
+
+	// Recive message
+	msg, ok := <-client.Incoming
+	assert.True(t, ok)
+	assert.Equal(t, longPongMessage, string(msg.Data))
+
+	time.Sleep(100 * time.Millisecond) // do work
+
+	client.Outgoing <- packet.New(0, []byte(longPingMessage))
+	// time.Sleep(200 * time.Millisecond)
+	// And quickly close
 }

@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"os"
 	"sync/atomic"
+	"time"
 )
 
 // Stream represents a writable and readable network stream.
@@ -16,6 +18,7 @@ type Stream struct {
 	connection  atomic.Value
 	closeWriter chan struct{}
 	onError     func(IOError)
+	isClosing   bool
 }
 
 // NewStream creates a new stream with the given channel buffer size.
@@ -25,6 +28,7 @@ func NewStream(channelBufferSize int) *Stream {
 		out:         make(chan *Packet, channelBufferSize),
 		closeWriter: make(chan struct{}),
 		onError:     func(IOError) {},
+		isClosing:   false,
 	}
 
 	// The public fields point to the same channels,
@@ -66,8 +70,23 @@ func (stream *Stream) OnError(callback func(IOError)) {
 
 // Close frees up the resources used by the stream and closes the connection.
 func (stream *Stream) Close() {
+	stream.isClosing = true
+	stream.Connection().SetDeadline(time.Now())
+}
+
+// This gets called after write rouine has closed and consequently after read has also been closed
+func (stream *Stream) closeConn() {
 	stream.Connection().Close()
 	close(stream.in)
+	stream.isClosing = false
+}
+
+// Proxy to stop i/o timeouts caused by closing stream
+func (stream *Stream) sendError(i IOError) {
+	if stream.isClosing && errors.Is(i.Error, os.ErrDeadlineExceeded) {
+		return
+	}
+	stream.onError(i)
 }
 
 // read starts a blocking routine that will read incoming messages.
@@ -84,14 +103,14 @@ func (stream *Stream) read(connection net.Conn) {
 		_, err := connection.Read(typeBuffer)
 
 		if err != nil {
-			stream.onError(IOError{connection, err})
+			stream.sendError(IOError{connection, err})
 			return
 		}
 
 		err = binary.Read(connection, binary.BigEndian, &length)
 
 		if err != nil {
-			stream.onError(IOError{connection, err})
+			stream.sendError(IOError{connection, err})
 			return
 		}
 
@@ -104,7 +123,7 @@ func (stream *Stream) read(connection net.Conn) {
 			readLength += n
 
 			if err != nil {
-				stream.onError(IOError{connection, err})
+				stream.sendError(IOError{connection, err})
 				return
 			}
 		}
@@ -119,13 +138,14 @@ func (stream *Stream) write(connection net.Conn) {
 	for {
 		select {
 		case <-stream.closeWriter:
+			stream.closeConn()
 			return
 
 		case packet := <-stream.out:
 			err := packet.Write(connection)
 
 			if err != nil {
-				stream.onError(IOError{connection, err})
+				stream.sendError(IOError{connection, err})
 				return
 			}
 		}
