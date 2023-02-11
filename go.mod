@@ -1,4 +1,4 @@
-module github.com/aerogo/packet
+module github.com/Wartori54/packet
 
 go 1.12
 
