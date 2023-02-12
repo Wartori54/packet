@@ -6,10 +6,11 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/aerogo/packet"
+	"github.com/Wartori54/packet"
 	"github.com/akyoto/assert"
 )
 
@@ -261,17 +262,16 @@ func TestSendAndClose(t *testing.T) {
 	var longPongMessage = "pongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpong\n" +
 		"pongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpongpong"
 
-	listener, err := net.Listen("tcp", "192.168.1.143:7004")
+	listener, err := net.Listen("tcp", "localhost:7004")
 	assert.Nil(t, err)
 	assert.NotNil(t, listener)
 	defer listener.Close()
 
+	var main_wg sync.WaitGroup
+	main_wg.Add(2)
+
 	go func() {
 		conn, err := listener.Accept()
-
-		if conn == nil {
-			return
-		}
 
 		assert.NotNil(t, conn)
 		assert.Nil(t, err)
@@ -299,33 +299,44 @@ func TestSendAndClose(t *testing.T) {
 		assert.Equal(t, longPingMessage, string(msg.Data))
 
 		client.Close()
-
+		main_wg.Done()
 	}()
 
-	// Client
-	conn, err := net.Dial("tcp", "192.168.1.143:7004")
-	assert.Nil(t, err)
+	func() {
+		// Client
+		conn, err := net.Dial("tcp", "localhost:7004")
+		assert.Nil(t, err)
+		assert.NotNil(t, conn)
 
-	client := packet.NewStream(1024)
-	client.SetConnection(conn)
-	defer client.Close()
+		client := packet.NewStream(1024)
+		client.SetConnection(conn)
+		defer client.Close()
 
-	client.OnError(func(i packet.IOError) {
-		fmt.Println("Error: ", i.Error.Error())
-		assert.Nil(t, i.Error)
-	})
+		client.OnError(func(i packet.IOError) {
+			fmt.Println("Error: ", i.Error.Error())
+			if i.Error == io.EOF {
+				return
+			}
+			assert.Nil(t, i.Error)
+		})
 
-	// Send message
-	client.Outgoing <- packet.New(0, []byte(longPingMessage))
+		// Send message
+		client.Outgoing <- packet.New(0, []byte(longPingMessage))
 
-	// Recive message
-	msg, ok := <-client.Incoming
-	assert.True(t, ok)
-	assert.Equal(t, longPongMessage, string(msg.Data))
+		// Recive message
+		msg, ok := <-client.Incoming
+		assert.True(t, ok)
+		assert.Equal(t, longPongMessage, string(msg.Data))
+		fmt.Println("1:" + string(msg.Data))
 
-	time.Sleep(100 * time.Millisecond) // do work
+		time.Sleep(100 * time.Millisecond) // do work
 
-	client.Outgoing <- packet.New(0, []byte(longPingMessage))
-	// time.Sleep(200 * time.Millisecond)
-	// And quickly close
+		client.Outgoing <- packet.New(0, []byte(longPingMessage))
+		// time.Sleep(200 * time.Millisecond)
+		// And quickly close
+		main_wg.Done()
+		fmt.Println("client exit")
+	}()
+
+	main_wg.Wait()
 }

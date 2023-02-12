@@ -71,7 +71,8 @@ func (stream *Stream) OnError(callback func(IOError)) {
 // Close frees up the resources used by the stream and closes the connection.
 func (stream *Stream) Close() {
 	stream.isClosing = true
-	stream.Connection().SetDeadline(time.Now())
+	stream.Connection().SetReadDeadline(time.Now()) // stop the read goroutine, which will stop the write goroutine and close everything
+	// This makes sure that packets sent right before calling Close are actually send and not discarted
 }
 
 // This gets called after write rouine has closed and consequently after read has also been closed
